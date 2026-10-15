@@ -1,0 +1,47 @@
+name: GGsolow scheduled scans
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '2-57/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ggsolow-scan
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Trigger the deployed Telegram function
+        env:
+          TGCLOUD_TOKEN: ${{ secrets.TGCLOUD_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tgcloud"
+          cd "$RUNNER_TEMP/tgcloud"
+          npm install @tgcloud/cli@0.2.0 --ignore-scripts --no-audit --no-fund
+          node --input-type=module <<'JS'
+          import { getFiles, runFunction } from './node_modules/@tgcloud/cli/src/api/endpoints.js';
+          const token = process.env.TGCLOUD_TOKEN;
+          if (!token) throw new Error('TGCLOUD_TOKEN secret is missing');
+          try {
+            const remote = await getFiles(token);
+            const sources = remote.canonical_modules;
+            if (!sources['endpoints/tick']) throw new Error('Scheduler function is not deployed');
+            sources['endpoints/scheduledRun'] = "import tick from './tick.js'; import {config} from '../lib/config.js'; export default async function(){return tick({}, {initData:{user:{id:config.telegram_admin_id}}});}";
+            const result = await runFunction(token, 'endpoints/scheduledRun', sources, {}, {});
+            console.log(JSON.stringify(result.result));
+          } catch {
+            console.error('Telegram scheduled scan failed. Check the bot health and AI quota.');
+            process.exitCode = 1;
+          }
+          JS
